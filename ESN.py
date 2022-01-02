@@ -46,15 +46,36 @@ class ESN(nn.Module):
         #self.fci = nn.Linear(input_size, in_to_hidden)
         self.Win = Win
         self.W = W
+        self.activation = activation
+        self.ker_size = 10
+
         if activation == "LeakyReLU":
             self.act = torch.nn.LeakyReLU()
         elif activation == "Tanh":
             self.act = torch.nn.Tanh()
-        # Default activation function
-        else:   
+        elif  activation == "ELU":
+            self.act = torch.nn.ELU(alpha=1.0, inplace=False)
+        elif activation == "ModTanh":
+            self.mod = nn.Linear(W.shape[0], 1)
             self.act = torch.nn.Tanh()
+        elif activation == "PrModTanh":
+            self.mod = nn.Linear(W.shape[0], 1)
+            self.act = torch.nn.Tanh()
+        elif activation == "ConvModTanh":
+            self.mod2 = nn.Conv2d(in_channels=1, out_channels=1, kernel_size=(W.shape[0],1))
+            self.mod3 = nn.Linear(W.shape[0],1)
+            self.act = torch.nn.Tanh()
+        else:   
+            # Default activation function
+            self.act = torch.nn.Tanh()
+
         self.fco = nn.Linear(W.shape[0], output_size)
 
+        #self.mod2 = nn.Conv2d(in_channels=1, out_channels=1, kernel_size=self.ker_size)#max(3,W.shape[0]//20))
+        #self.mod3 = nn.Linear((W.shape[0]-self.ker_size+1),1)
+
+        #self.mod4 = nn.Conv2d(in_channels=1, out_channels=1, kernel_size=(W.shape[0],1))
+        #self.mod5 = nn.Linear(W.shape[0],1)
 
     def forward(self, 
                 u: torch.Tensor, 
@@ -62,11 +83,35 @@ class ESN(nn.Module):
         ) -> torch.Tensor:
 
         #x = self.fci(u)
-        x = torch.einsum("ik, k -> i", self.Win, u)
+        xu = torch.einsum("ik, k -> i", self.Win, u)
         #x, h_o = self.resvoir(x, h_i)
-        x = x + torch.einsum("ij, j -> i", self.W, h_i)
+        x = xu + torch.einsum("ij, j -> i", self.W, h_i)
         #h_o = torch.tanh(x)   # x(n+1) = tanh(Win*u(n) +  W*x(n))
         h_o = self.act(x)
+
+        if self.activation == "ModTanh":
+            h_o = (torch.tanh(self.mod(h_o))+1)*h_o  
+
+        elif self.activation == "PrModTanh":
+            pr = torch.tanh(torch.einsum("ij, j -> i", self.W, h_o) +  torch.einsum("ik, k -> i", self.Win, self.fco(h_o)))
+            h_o = (torch.tanh(self.mod(pr))+1)*h_o
+
+        elif self.activation == "ConvModTanh":
+            h_conv = torch.einsum("ij, j -> i", self.W, h_o) 
+            h_conv = torch.einsum("i, ij, k-> jk", h_o, self.W, h_conv)
+            h_conv = self.mod2(torch.reshape(h_conv,(1,1,1000,1000)))[0,0,0,...]
+            h_o = (torch.tanh(self.mod3(h_conv))+1)*h_o
+
+        #h_conv = torch.einsum("ij, j -> i", self.W, h_i) 
+        #h_conv = torch.einsum("i, ij, k-> jk", h_i, self.W, h_conv)
+        
+        #h_conv = self.mod2(torch.reshape(h_conv,(1,1,1000,1000)))[0,0,...]
+        #h_o = (torch.tanh(self.mod3(torch.diag(h_conv)))+1)*h_o
+
+        #h_conv = self.mod2(torch.reshape(h_conv,(1,1,1000,1000)))[0,0,...]
+        #h_conv = F.max_pool2d(h_conv, kernel_size=self.ker_size)
+        #h_o = (torch.tanh(self.mod3(h_conv))+1)*h_o
+
         x = self.fco(h_o)
 
         return x, h_o
@@ -97,17 +142,20 @@ def get_model_optimizer(model: torch.nn.Module, opt_type:str) -> torch.optim.Opt
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") # TODO: move all tensors and model to device
 os.system("cls")
 H = 300
-d = 6
+d = 6  # 0.1*H
 Nt = 100
-for_hor = 1      # This can be any integer, "n" for infinite horizon, "v" for variable
+for_hor = 4      # This can be any integer, "n" for infinite horizon, "v" for variable
 dym_sys = 3
-epochs = 5000
-activations = ["LeakyReLU", "Tanh"]
-activation = activations[1]
-sys_types = ["rectilinear", "sinusoidal"]
-sys_type = sys_types[1]
+epochs = 500
+activations = ["LeakyReLU", "Tanh", "ELU", "ModTanh", "PrModTanh", "ConvModTanh"]
+activation = activations[0]
+sys_types = ["dis_rectilinear", "dis_sinusoidal"]
+sys_type = sys_types[0]
 opt_types = ["SGD", "Adam"]
 opt_type = opt_types[1]
+early_stop = None #0.0005*Nt # 0.05  # None to deactive early stopping
+tikhonov = 0  # lambda value, 0 to deactive tikhonov
+p_tikhonov = 2
 
 
 ########### Internal Model (Reservoir)
@@ -125,17 +173,15 @@ for i in range(W.shape[0]):
         if abs(W[i,j]) > 0:
             cnt += 1
 
-In_acc = torch.rand([H])*2 - 1
-h_0 = torch.rand([H])
-Win = torch.zeros([H,dym_sys])
+In_acc = torch.rand([H], device=device)*2 - 1
+h_0 = torch.rand([H], device=device)
+Win = torch.zeros([H,dym_sys], device=device)
 for i in range(In_acc.shape[0]):
-    Win[i,torch.randint(high=dym_sys-1, size=[1])] = In_acc[i]
+    Win[i,torch.randint(high=dym_sys-1, size=[1], device=device)] = In_acc[i]
 
-#h_0.to(device)
-#Win.to(device)
-#W.to(device)
-model = ESN(Win, W, activation, dym_sys)
-#model.to(device)
+W = W.to(device)
+model = ESN(Win, W, activation, dym_sys).to(device)
+
 
 print("########## ESN\n")
 print(f'Using device: {device}') 
@@ -146,30 +192,32 @@ print(f"System type: {sys_type}")
 print(f"System dimension: {dym_sys}")
 print(f"Trained forecasting horizon: {for_hor}")
 print(f"Epochs: {epochs}")
-print(f"Reservoir activation function: {model.act}")
+print(f"Reservoir activation function: {activation}")
 print(f"Optimizer: {opt_type}")
+print(f"Ealry Stop: {early_stop}")
+print(f"Tikhonov: {tikhonov}   [ p={p_tikhonov} ]")
 print(f'ESN number of parameters: {count_parameters(model)}\n')
 
 
 ########### Ground Truth model
 
-if sys_type == "rectilinear":
+if sys_type == "dis_rectilinear":
 
-    A = torch.tensor(np.array([[1, 0, 0],[0, 1 ,0],[ 0, 0, 1]]), dtype=torch.float)
-    x_0 = torch.tensor(np.array([1,1,-1.]), dtype=torch.float)
-    b = torch.tensor(np.array([0.1,0,0]), dtype=torch.float)
+    A = torch.tensor(np.array([[1, 0, 0],[0, 1 ,0],[ 0, 0, 1]]), dtype=torch.float, device=device)
+    x_0 = torch.tensor(np.array([1,1,-1.]), dtype=torch.float, device=device)
+    b = torch.tensor(np.array([0.1,0,0]), dtype=torch.float, device=device)
 
-elif sys_type == "sinusoidal":  
+elif sys_type == "dis_sinusoidal":  
 
-    A = torch.tensor(np.array([[0, 1, 0],[-1, 0 ,0],[ 0, 0, 1]]), dtype=torch.float)
-    x_0 = torch.tensor(np.array([1,1,-1.]), dtype=torch.float)
-    b = torch.tensor(np.array([0,0,0]), dtype=torch.float)
+    A = torch.tensor(np.array([[0, 1, 0],[-1, 0 ,0],[ 0, 0, 1]]), dtype=torch.float, device=device)
+    x_0 = torch.tensor(np.array([1,1,-1.]), dtype=torch.float, device=device)
+    b = torch.tensor(np.array([0,0,0]), dtype=torch.float, device=device)
 
 else:
-    # default: sinusoidal
-    A = torch.tensor(np.array([[0, 1, 0],[-1, 0 ,0],[ 0, 0, 1]]), dtype=torch.float)
-    x_0 = torch.tensor(np.array([1,1,-1.]), dtype=torch.float)
-    b = torch.tensor(np.array([0,0,0]), dtype=torch.float)
+    # default: dis_sinusoidal
+    A = torch.tensor(np.array([[0, 1, 0],[-1, 0 ,0],[ 0, 0, 1]]), dtype=torch.float, device=device)
+    x_0 = torch.tensor(np.array([1,1,-1.]), dtype=torch.float, device=device)
+    b = torch.tensor(np.array([0,0,0]), dtype=torch.float, device=device)
 
 
 ########### TRAINING Phase
@@ -179,12 +227,13 @@ optimizer = get_model_optimizer(model, opt_type)
 num_print = 10      # Number of Loss values printed
 buff_print = ""
 loss_plotter = []
+weigths_norm_plt = []
+stopped = False
 for epoch in trange(epochs, desc="train epoch"):
     model.train()
 
     h_i = h_0
-    x_i = torch.rand([3], dtype=torch.float)
-    #x_i.to(device)
+    x_i = torch.rand([3], dtype=torch.float, device=device)
     x_hat_i = x_i
 
     Ed = 0
@@ -195,35 +244,52 @@ for epoch in trange(epochs, desc="train epoch"):
     for i in range(1, Nt+1):
         if for_hor_t != "n" and i % for_hor_t == 0:
             x_hat_i = x_i
+        #try:
         x_hat_i, h_i = model(x_hat_i,h_i)
+        #except Exception as e:
+            #print(e)
         x_i = lin_sys(x_i, A, b)
         Ed += (x_hat_i - x_i)**2
 
+    # p-regularization 
+    Ed += tikhonov*torch.norm(model.fco.weight, p=p_tikhonov, dim=1)
     Ed = torch.sum(Ed/Nt)/dym_sys
-    if epoch % (epochs//num_print) == 0:
-        buff_print += f"\nLoss [epoch {epoch}]: {Ed}"
-    loss_plotter.append(Ed)
 
+    # updating print buffer
+    if epochs < num_print or epoch % (epochs//num_print) == 0:
+        buff_print += f"\nLoss [epoch {epoch}]: {Ed}"
+
+    # updating buffers for plots    
+    loss_plotter.append(Ed.detach())
+    weigths_norm_plt.append(torch.sum(torch.norm(model.fco.weight, p=p_tikhonov, dim=1)).detach())
+
+    # early stopping
+    if early_stop != None and Ed < early_stop:
+        stopped = True
+        break
+
+    # backpropagation and optimization
     Ed.backward()
     optimizer.step()
     optimizer.zero_grad()
 
 
-if epoch % (epochs//num_print) != 0:
+if epochs < num_print or epoch % (epochs//num_print) != 0:
     buff_print += f"\nLoss [epoch {epoch}]: {Ed}"
 print(buff_print)
-
+if stopped:
+    print(f"\nEarly Stop:  {Ed} < {early_stop}   [epoch: {epoch}]\n")
 
 
 ########### TEST Phase
 
 model.eval()
-Nt_test = 200  # Horizon in test phase
-k = 0          # Component of the system to plot 
-x_sys = [x_0[k].numpy()]
-x_for_1 = [x_0[k].numpy()]
-x_for_n = [x_0[k].numpy()]
-x_for_t = [x_0[k].numpy()]
+Nt_test = Nt*2  # Horizon in test phase
+k = 0           # Component of the system to plot 
+x_sys = [x_0[k].cpu().numpy()]
+x_for_1 = [x_0[k].cpu().numpy()]
+x_for_n = [x_0[k].cpu().numpy()]
+x_for_t = [x_0[k].cpu().numpy()]
 x_i = x_0
 xn_hat_i = x_0
 xt_hat_i = x_0
@@ -253,10 +319,10 @@ for i in range(1, Nt_test+1):
     # ground truth system
     x_i = lin_sys(x_i, A, b)
 
-    x_sys.append(x_i[k])
-    x_for_1.append(x1_hat_i[k])
-    x_for_n.append(xn_hat_i[k])
-    x_for_t.append(xt_hat_i[k])
+    x_sys.append(x_i[k].cpu())
+    x_for_1.append(x1_hat_i[k].cpu())
+    x_for_n.append(xn_hat_i[k].cpu())
+    x_for_t.append(xt_hat_i[k].cpu())
 
 
 
@@ -264,6 +330,7 @@ for i in range(1, Nt_test+1):
 
 # Loss
 plt.plot(loss_plotter)
+plt.plot(weigths_norm_plt)
 plt.title(f"Loss value")
 plt.xlabel("t")
 plt.ylabel(f"L(t)")
@@ -283,3 +350,8 @@ plt.legend()
 plt.scatter(Nt, x_sys[Nt], color="black")
 
 plt.show()
+
+
+# IDEAS
+
+# early stop
