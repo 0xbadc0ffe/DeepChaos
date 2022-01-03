@@ -1,0 +1,21 @@
+{
+    "device": "cpu",
+    "H": 200,
+    "connectivity": 2.985,
+    "sigma_in": 0.15,
+    "lambda_coeff": 0.4,
+    "alpha": 0,
+    "Nt": 100,
+    "sys_name": "Lorenz",
+    "sys_type": "continuous",
+    "dym_sys": 3,
+    "for_hor": 1,
+    "epochs": 10000,
+    "activation": "Tanh",
+    "opt_type": "Adam",
+    "early_stop": null,
+    "tikhonov": 0.0001,
+    "p_tikhonov": 2,
+    "pre_training": false,
+    "parameters count": 603
+}
