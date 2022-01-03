@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm, trange
 import os
 import random
+import json
 
 #np.warnings.filterwarnings('ignore', category=np.VisibleDeprecationWarning)
 
@@ -148,7 +149,6 @@ def FLE(A, iters=500, eigvec=False):
     else:
         return torch.norm(torch.einsum("ij, j -> i",A, v))
 
-
 # Slow Largest Eigenvector
 def SLE(A):
     eig = torch.linalg.eig(A)[0]
@@ -161,7 +161,7 @@ def Lorenz(t, x, sigma=10, rho=28, beta=8/3):
     return torch.tensor([sigma*(x[1]-x[0]), rho*x[0] -x[1] - x[0]*x[2], x[0]*x[1]-beta*x[2]], device=x.device)
 
 def Elicoidal(t, x, a=0.6, b=-0.1):
-    return np.asarray([-a*x[1], a*x[0], b*x[2]])
+    return torch.tensor([-a*x[1], a*x[0], b*x[2]], device=x.device)
 
 
 class Sys():
@@ -219,12 +219,12 @@ class Sys():
 
 ########### ESN - Hyperparameters
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") # TODO: move all tensors and model to device
+device = "cpu" #torch.device("cuda:0" if torch.cuda.is_available() else "cpu") # TODO: move all tensors and model to device
 os.system("cls")
 H = 200
 d = 3  # 0.05*H
-Nt = 1000
-for_hor = 1      # This can be any integer, "n" for infinite horizon, "v" for variable
+Nt = 100    # paper: 1000
+for_hor = 1        # This can be any integer, "n" for infinite horizon, "v" for variable
 dym_sys = 3
 epochs = 1000
 activations = ["LeakyReLU", "Tanh", "ELU", "ModTanh", "PrModTanh", "ConvModTanh"]
@@ -233,8 +233,8 @@ sys_types = {
             "discrete":     ["dis_rectilinear", "dis_sinusoidal"], 
             "continuous":   ["Lorenz", "Elicoidal"]
         }
-sys_type = list(sys_types.keys())[1]  #"continuous" # "discrete"
-sys_name = sys_types[sys_type][0]
+sys_type = list(sys_types.keys())[1]  # "discrete" #"continuous" 
+sys_name = sys_types[sys_type][1]
 opt_types = ["SGD", "Adam"]
 opt_type = opt_types[1]
 early_stop = None  # 0.0005*Nt  # None to deactive early stopping
@@ -242,6 +242,9 @@ tikhonov = 0.0001  # lambda value, 0 to deactive tikhonov
 p_tikhonov = 2
 sigma_in = 0.15
 lambda_coeff = 0.4  # <= 1 to ensure the Echo State Property
+save_training = True         # save training
+pre_training = True          # pre training   
+alpha = 1                     # tempered Physical loss
 
 
 ########### Internal Model (Reservoir)
@@ -259,6 +262,7 @@ for i in range(W.shape[0]):
         if abs(W[i,j]) > 0:
             cnt += 1
 
+connectivity = cnt/H
 
 # Forcing largest eigenvalue norm to lambda to ensure ESP
 eig = SLE(W) #FLE(W)
@@ -280,9 +284,10 @@ model = ESN(Win, W, activation, dym_sys).to(device)
 print("########## ESN\n")
 print(f'Using device:                   {device}') 
 print(f"Hidden dimension:               {H}")
-print(f"AVG connectivity:               {cnt/H}")
+print(f"AVG connectivity:               {connectivity}")
 print(f"Sigma_in:                       {sigma_in}")
 print(f"Lambda:                         {lambda_coeff}")
+print(f"Alpha:                          {alpha}")
 print(f"Training horizon:               {Nt}")
 print(f"System type:                    {sys_name}   [{sys_type}]")
 print(f"System dimension:               {dym_sys}")
@@ -292,7 +297,10 @@ print(f"Reservoir activation function:  {activation}")
 print(f"Optimizer:                      {opt_type}")
 print(f"Ealry Stop:                     {early_stop}")
 print(f"Tikhonov:                       {tikhonov}   [ p={p_tikhonov} ]")
+print(f"Save Training:                  {save_training}")
+print(f"Pre-Trainig:                    {pre_training}")
 print(f'ESN number of parameters:       {count_parameters(model)}\n')
+
 
 
 ########### Ground Truth model
@@ -308,7 +316,8 @@ if sys_type == "discrete":
 
     elif sys_name == "dis_sinusoidal":  
 
-        A = torch.tensor(np.array([[0, 1, 0],[-1, 0 ,0],[ 0, 0, 1]]), dtype=torch.float, device=device)
+        #A = torch.tensor(np.array([[0, 1, 0],[-1, 0 ,0],[ 0, 0, 1]]), dtype=torch.float, device=device)
+        A = torch.tensor(np.array([[1, 0, 0],[0, 0 ,1],[ 0, -1, 0]]), dtype=torch.float, device=device)
         x_0 = torch.tensor(np.array([1,1,-1.]), dtype=torch.float, device=device)
         b = torch.tensor(np.array([0,0,0]), dtype=torch.float, device=device)
 
@@ -322,7 +331,8 @@ if sys_type == "discrete":
 elif sys_type == "continuous":
 
     if sys_name == "Lorenz":
-        x_0 = torch.tensor([10, 20, 10], dtype=torch.float, device=device)
+        #x_0 = torch.tensor([10, 20, 10], dtype=torch.float, device=device)
+        x_0 = torch.tensor([-2, -5, 25], dtype=torch.float, device=device)
         eps = 0.01
         df = Lorenz
 
@@ -335,7 +345,76 @@ elif sys_type == "continuous":
 
 ########### TRAINING Phase
 
+
 optimizer = get_model_optimizer(model, opt_type)
+
+## Pre-Training
+if pre_training:
+    h_i = h_0
+    x_i = (torch.rand([3], dtype=torch.float, device=device)*2-1) + x_0
+    X = h_0.unsqueeze(0)
+    Y = x_i.unsqueeze(0)
+    x_hat_i = x_i
+    if sys_type == "continuous":
+        sys.restart(x_i)
+
+    model.train()
+    Ed = 0
+    Ep = 0
+    if for_hor == "v":
+        for_hor_t = random.randint(a=1, b=Nt)
+    else:
+        for_hor_t = for_hor
+    x_prev = x_i
+    for i in range(1, Nt+1):
+        if for_hor_t != "n" and i % for_hor_t == 0:
+            x_hat_i = x_i
+
+        # model prediction
+        x_hat_i, h_i = model(x_hat_i,h_i)
+
+        Y = torch.cat([Y, x_hat_i.clone().detach().unsqueeze(0)],dim=0)
+        X = torch.cat([X, h_i.clone().detach().unsqueeze(0)],dim=0)
+         
+        if sys_type == "discrete":
+            x_i = lin_sys(x_i, A, b)
+        else:
+            sys.step()
+            x_i = sys.x
+        Ep += ((x_hat_i - x_prev)/sys.eps - df(sys.t0+sys.clock*sys.eps, x_hat_i))**2
+        Ed += (x_hat_i - x_i)**2
+        x_prev = x_hat_i
+
+    # p-regularization 
+    Ed += tikhonov*torch.norm(model.fco.weight, p=p_tikhonov, dim=1)
+    Ed = torch.sum(Ed/Nt)/dym_sys
+
+    # Physical constraint
+    Ep = torch.sum(Ep/Nt)/dym_sys
+    Ed += alpha*Ep
+
+    # backpropagation and optimization
+    Ed.backward()
+    optimizer.step()
+    optimizer.zero_grad()
+
+    # Wout = Y'*X*(X'*X + gamma*I)^-1
+
+    Wout = torch.einsum("dn, nh -> dh", Y.t(), X)
+    X_inv = torch.einsum("hn, nk -> hk", X.t(), X)
+
+    Wout = torch.einsum("dh, hk -> dk", Wout, torch.inverse(X_inv + tikhonov*torch.eye(H, device=device)))
+    Wout.requires_grad = True
+
+    #print(model.fco.weight)
+    #print(Wout)
+    with torch.no_grad():
+        model.fco.weight = torch.nn.Parameter(Wout)
+    #print(model.fco.weight)
+
+
+
+## Training
 
 num_print = 10      # Number of Loss values printed
 buff_print = ""
@@ -346,12 +425,14 @@ for epoch in trange(epochs, desc="train epoch"):
     model.train()
 
     h_i = h_0
-    x_i = torch.rand([3], dtype=torch.float, device=device)
+    x_i = x_0 #(torch.rand([3], dtype=torch.float, device=device)*2-1) + x_0
     x_hat_i = x_i
     if sys_type == "continuous":
         sys.restart(x_i)
 
     Ed = 0
+    Ep = 0
+    x_prev = x_hat_i
     if for_hor == "v":
         for_hor_t = random.randint(a=1, b=Nt)
     else:
@@ -369,11 +450,18 @@ for epoch in trange(epochs, desc="train epoch"):
         else:
             sys.step()
             x_i = sys.x
-        Ed += (x_hat_i - x_i)**2
+            Ep += ((x_hat_i - x_prev)/sys.eps - df(sys.t0+sys.clock*sys.eps, x_hat_i))**2
+        Ed += (x_hat_i - x_i)**2        
+        x_prev = x_hat_i
+
 
     # p-regularization 
     Ed += tikhonov*torch.norm(model.fco.weight, p=p_tikhonov, dim=1)
     Ed = torch.sum(Ed/Nt)/dym_sys
+
+    # Physical constraint
+    Ep = torch.sum(Ep/Nt)/dym_sys
+    Ed += alpha*Ep
 
     # updating print buffer
     if epochs < num_print or epoch % (epochs//num_print) == 0:
@@ -458,6 +546,54 @@ for i in range(1, Nt_test+1):
     x_for_t = torch.cat([x_for_t, xt_hat_i.unsqueeze(0).detach().cpu()],dim=0)
 
 
+########### SAVE
+
+if save_training:
+
+    PATH = os.path.abspath(".\data")
+
+    # Saving model weights
+    torch.save(model.state_dict(), PATH+"\model.pth")
+
+
+    # Saving plots and configs
+    data = {}
+    jsonfile = PATH+"\cfgs.json"
+
+
+    data["device"] = str(device)
+    data["H"] = H
+    data["connectivity"] = connectivity
+    data["sigma_in"] = sigma_in
+    data["lambda_coeff"] = lambda_coeff
+    data["alpha"] = alpha
+    data["Nt"] = Nt
+    data["sys_name"] = sys_name
+    data["sys_type"] = sys_type
+    data["dym_sys"] = dym_sys
+    data["for_hor"] = for_hor
+    data["epochs"] = epochs
+    data["activation"] = activation
+    data["opt_type"] = opt_type
+    data["early_stop"] = early_stop
+    data["tikhonov"] = tikhonov
+    data["p_tikhonov"] = p_tikhonov
+    data["pre_training"] = pre_training
+    data["parameters count"] = count_parameters(model)
+
+
+    #data["loss"] = loss_plotter
+    #data["weigths_norm_plt"] = weigths_norm_plt
+    #data["x_sys"] = x_sys
+    #data["x_for_1"] = x_for_1
+    #data["x_for_n"] = x_for_n
+    #data["x_for_t"] = x_for_t
+
+
+    with open(jsonfile, "w+") as jfile:
+        json.dump(data, jfile, indent=4)
+
+
 ########### PLOTS
 
 
@@ -467,10 +603,10 @@ plt.plot(weigths_norm_plt)
 plt.title(f"Loss value")
 plt.xlabel("t")
 plt.ylabel(f"L(t)")
+
+k=0
 plt.figure(2)
-
-
-plt.title(f"Forecasting")
+plt.title(f"t-Forecasting")
 plt.plot(x_sys[:,k], color="blue", label="ground truth")
 plt.plot(x_for_1[:,k], color="red", label="1-forecasting")
 plt.plot(x_for_n[:,k], color="green",label="n-forecasting")
@@ -480,14 +616,46 @@ plt.plot(x_for_t[:,k], color="violet",label=f"{for_hor}-forecasting (trained)")
 plt.xlabel("t")
 plt.ylabel(f"x{k}(t)")
 plt.legend()
-plt.scatter(Nt, x_sys[Nt, k], color="black")
+plt.scatter(Nt, x_sys[Nt, k], color="black") # training horizon position
 
+k=1
 plt.figure(3)
+plt.title(f"t-Forecasting")
+plt.plot(x_sys[:,k], color="blue", label="ground truth")
+plt.plot(x_for_1[:,k], color="red", label="1-forecasting")
+plt.plot(x_for_n[:,k], color="green",label="n-forecasting")
+#if for_hor != "n" and for_hor != 1:
+#    plt.plot(x_for_t, color="violet",label=f"{for_hor}-forecasting (trained)")
+plt.plot(x_for_t[:,k], color="violet",label=f"{for_hor}-forecasting (trained)")
+plt.xlabel("t")
+plt.ylabel(f"x{k}(t)")
+plt.legend()
+plt.scatter(Nt, x_sys[Nt, k], color="black") # training horizon position
+
+k=2
+plt.figure(4)
+plt.title(f"t-Forecasting")
+plt.plot(x_sys[:,k], color="blue", label="ground truth")
+plt.plot(x_for_1[:,k], color="red", label="1-forecasting")
+plt.plot(x_for_n[:,k], color="green",label="n-forecasting")
+#if for_hor != "n" and for_hor != 1:
+#    plt.plot(x_for_t, color="violet",label=f"{for_hor}-forecasting (trained)")
+plt.plot(x_for_t[:,k], color="violet",label=f"{for_hor}-forecasting (trained)")
+plt.xlabel("t")
+plt.ylabel(f"x{k}(t)")
+plt.legend()
+plt.scatter(Nt, x_sys[Nt, k], color="black") # training horizon position
+
+plt.figure(5)
 ax = plt.axes(projection='3d')
-ax.plot3D(x_for_t[:,0].numpy(), x_for_t[:,1].numpy(), x_for_t[:,2].numpy(), 'red')
-ax.plot3D(x_sys[:,0].numpy(), x_sys[:,1].numpy(), x_sys[:,2].numpy(), 'blue')
+ax.plot3D(x_for_t[:,0].numpy(), x_for_t[:,1].numpy(), x_for_t[:,2].numpy(), 'red', label="gnd")
+ax.plot3D(x_sys[:,0].numpy(), x_sys[:,1].numpy(), x_sys[:,2].numpy(), 'blue', label="t-for")
 plt.title("3D plot")
 
+ax.scatter(x_sys[0,0],x_sys[0,1],x_sys[0,2], color="green") # initial position
+ax.scatter(x_sys[Nt,0],x_sys[Nt,1],x_sys[Nt,2], color="black") # training horizon position
+
 plt.show()
+
 
 
