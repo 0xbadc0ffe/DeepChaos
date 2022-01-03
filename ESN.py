@@ -242,7 +242,7 @@ tikhonov = 0.0001  # lambda value, 0 to deactive tikhonov
 p_tikhonov = 2
 sigma_in = 0.15
 lambda_coeff = 0.4  # <= 1 to ensure the Echo State Property
-save_training = False         # save training
+save_training = True         # save training
 pre_training = False          # pre training   
 alpha = 0                     # tempered Physical loss
 
@@ -406,11 +406,8 @@ if pre_training:
     Wout = torch.einsum("dh, hk -> dk", Wout, torch.inverse(X_inv + tikhonov*torch.eye(H, device=device)))
     Wout.requires_grad = True
 
-    #print(model.fco.weight)
-    #print(Wout)
     with torch.no_grad():
         model.fco.weight = torch.nn.Parameter(Wout)
-    #print(model.fco.weight)
 
 
 
@@ -581,17 +578,19 @@ if save_training:
     data["pre_training"] = pre_training
     data["parameters count"] = count_parameters(model)
 
-
-    #data["loss"] = loss_plotter
-    #data["weigths_norm_plt"] = weigths_norm_plt
-    #data["x_sys"] = x_sys
-    #data["x_for_1"] = x_for_1
-    #data["x_for_n"] = x_for_n
-    #data["x_for_t"] = x_for_t
-
-
+    
     with open(jsonfile, "w+") as jfile:
         json.dump(data, jfile, indent=4)
+
+
+    torch.save(loss_plotter, PATH+"\loss.pt")
+    torch.save(weigths_norm_plt, PATH+"\weigths_norm.pt")
+    
+    torch.save(x_sys, PATH+"\\ground_truth_sys.pt")  
+    torch.save(x_for_1, PATH+"\\1-forcasting.pt")
+    torch.save(x_for_n, PATH+"\\n-forcasting.pt")
+    torch.save(x_for_t, PATH+"\\trained-forcasting.pt")
+
 
 
 ########### PLOTS
