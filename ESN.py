@@ -63,7 +63,7 @@ class ESN(nn.Module):
         elif activation == "PrModTanh":
             self.mod = nn.Linear(W.shape[0], 1)
             self.act = torch.nn.Tanh()
-        elif activation == "ConvModTanh":
+        elif activation == "ConvModTanh1" or activation == "ConvModTanh2":
             self.mod2 = nn.Conv2d(in_channels=1, out_channels=1, kernel_size=(W.shape[0],1))
             self.mod3 = nn.Linear(W.shape[0],1)
             self.act = torch.nn.Tanh()
@@ -98,10 +98,15 @@ class ESN(nn.Module):
             pr = torch.tanh(torch.einsum("ij, j -> i", self.W, h_o) +  torch.einsum("ik, k -> i", self.Win, self.fco(h_o)))
             h_o = (torch.tanh(self.mod(pr))+1)*h_o
 
-        elif self.activation == "ConvModTanh":
+        elif self.activation == "ConvModTanh1":
             h_conv = torch.einsum("ij, j -> i", self.W, h_o) 
             h_conv = torch.einsum("i, ij, k-> jk", h_o, self.W, h_conv)
-            h_conv = self.mod2(torch.reshape(h_conv,(1,1,1000,1000)))[0,0,0,...]
+            h_conv = self.mod2(torch.reshape(h_conv,(1,1,W.shape[0],W.shape[0])))[0,0,0,...]
+            h_o = (torch.tanh(self.mod3(h_conv))+1)*h_o
+
+        elif self.activation == "ConvModTanh2":
+            h_conv= self.W*h_o
+            h_conv = self.mod2(torch.reshape(h_conv,(1,1,W.shape[0],W.shape[0])))[0,0,0,...]
             h_o = (torch.tanh(self.mod3(h_conv))+1)*h_o
 
         #h_conv = torch.einsum("ij, j -> i", self.W, h_i) 
@@ -227,8 +232,8 @@ Nt = 100    # paper: 1000
 for_hor = 1        # This can be any integer, "n" for infinite horizon, "v" for variable
 dym_sys = 3
 epochs = 10000
-activations = ["LeakyReLU", "Tanh", "ELU", "ModTanh", "PrModTanh", "ConvModTanh"]
-activation = activations[1]
+activations = ["LeakyReLU", "Tanh", "ELU", "ModTanh", "PrModTanh", "ConvModTanh1", "ConvModTanh2"]
+activation = activations[5]
 sys_types = {
             "discrete":     ["dis_rectilinear", "dis_sinusoidal"], 
             "continuous":   ["Lorenz", "Elicoidal"]
@@ -242,7 +247,7 @@ tikhonov = 0.0001  # lambda value, 0 to deactive tikhonov
 p_tikhonov = 2
 sigma_in = 0.15
 lambda_coeff = 0.4  # <= 1 to ensure the Echo State Property
-save_training = True         # save training
+save_training = False         # save training
 pre_training = False          # pre training   
 alpha = 0                     # tempered Physical loss
 
@@ -331,8 +336,8 @@ if sys_type == "discrete":
 elif sys_type == "continuous":
 
     if sys_name == "Lorenz":
-        #x_0 = torch.tensor([10, 20, 10], dtype=torch.float, device=device)
-        x_0 = torch.tensor([-2, -5, 25], dtype=torch.float, device=device)
+        x_0 = torch.tensor([10, 20, 10], dtype=torch.float, device=device)
+        #x_0 = torch.tensor([-2, -5, 25], dtype=torch.float, device=device)
         eps = 0.01
         df = Lorenz
 
@@ -372,9 +377,6 @@ if pre_training:
 
         # model prediction
         x_hat_i, h_i = model(x_hat_i,h_i)
-
-        Y = torch.cat([Y, x_hat_i.clone().detach().unsqueeze(0)],dim=0)
-        X = torch.cat([X, h_i.clone().detach().unsqueeze(0)],dim=0)
          
         if sys_type == "discrete":
             x_i = lin_sys(x_i, A, b)
@@ -384,6 +386,9 @@ if pre_training:
         Ep += ((x_hat_i - x_prev)/sys.eps - df(sys.t0+sys.clock*sys.eps, x_hat_i))**2
         Ed += (x_hat_i - x_i)**2
         x_prev = x_hat_i
+
+        Y = torch.cat([Y, x_i.clone().detach().unsqueeze(0)],dim=0)
+        X = torch.cat([X, h_i.clone().detach().unsqueeze(0)],dim=0)
 
     # p-regularization 
     Ed += tikhonov*torch.norm(model.fco.weight, p=p_tikhonov, dim=1)
