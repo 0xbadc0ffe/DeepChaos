@@ -226,7 +226,7 @@ d = 3  # 0.05*H
 Nt = 100    # paper: 1000
 for_hor = 1        # This can be any integer, "n" for infinite horizon, "v" for variable
 dym_sys = 3
-epochs = 1000
+epochs = 10000
 activations = ["LeakyReLU", "Tanh", "ELU", "ModTanh", "PrModTanh", "ConvModTanh"]
 activation = activations[1]
 sys_types = {
@@ -234,7 +234,7 @@ sys_types = {
             "continuous":   ["Lorenz", "Elicoidal"]
         }
 sys_type = list(sys_types.keys())[1]  # "discrete" #"continuous" 
-sys_name = sys_types[sys_type][1]
+sys_name = sys_types[sys_type][0]
 opt_types = ["SGD", "Adam"]
 opt_type = opt_types[1]
 early_stop = None  # 0.0005*Nt  # None to deactive early stopping
@@ -242,8 +242,8 @@ tikhonov = 0.0001  # lambda value, 0 to deactive tikhonov
 p_tikhonov = 2
 sigma_in = 0.15
 lambda_coeff = 0.4  # <= 1 to ensure the Echo State Property
-save_training = True         # save training
-pre_training = True          # pre training   
+save_training = False         # save training
+pre_training = False          # pre training   
 alpha = 1                     # tempered Physical loss
 
 
