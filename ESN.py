@@ -244,7 +244,7 @@ sigma_in = 0.15
 lambda_coeff = 0.4  # <= 1 to ensure the Echo State Property
 save_training = False         # save training
 pre_training = False          # pre training   
-alpha = 1                     # tempered Physical loss
+alpha = 0                     # tempered Physical loss
 
 
 ########### Internal Model (Reservoir)
