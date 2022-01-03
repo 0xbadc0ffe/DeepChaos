@@ -11,6 +11,7 @@ from tqdm import tqdm, trange
 import os
 import random
 
+#np.warnings.filterwarnings('ignore', category=np.VisibleDeprecationWarning)
 
 # reproducibility stuff
 if True:
@@ -135,27 +136,112 @@ def get_model_optimizer(model: torch.nn.Module, opt_type:str) -> torch.optim.Opt
         return optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
 
 
+# Fast Largest Eigenvector
+def FLE(A, iters=500, eigvec=False):
+    v = torch.ones(A.shape[0]) #.to(device)
+    for _ in range(iters):
+        m = torch.einsum("ij, j -> i",A, v)
+        lamb = torch.norm(m)
+        v = m/lamb
+    if eigvec:
+        return torch.norm(torch.einsum("ij, j -> i",A, v)), v
+    else:
+        return torch.norm(torch.einsum("ij, j -> i",A, v))
+
+
+# Slow Largest Eigenvector
+def SLE(A):
+    eig = torch.linalg.eig(A)[0]
+    eig = eig.unsqueeze(1)
+    return torch.max(torch.norm(eig, dim=1))
+
+
+
+def Lorenz(t, x, sigma=10, rho=28, beta=8/3):
+    return torch.tensor([sigma*(x[1]-x[0]), rho*x[0] -x[1] - x[0]*x[2], x[0]*x[1]-beta*x[2]], device=x.device)
+
+def Elicoidal(t, x, a=0.6, b=-0.1):
+    return np.asarray([-a*x[1], a*x[0], b*x[2]])
+
+
+class Sys():
+
+    def __init__(self, x_0, f, eps, t0=0, steps=1) -> None:
+        self.x_0 = x_0          # initial state
+        self.f = f              # transition matrix
+        self.x = x_0            # state
+        self.t0 = t0            # initila time
+        self.clock = 0          # clock
+        self.eps = eps          # epsilon (time step)
+        self.steps = steps      # RK steps
+
+    # System step, executes self.steps RK4
+    def step(self):
+        for i in range(self.steps):
+            self.RK4()
+            self.clock +=1
+
+    # Runge-Kutta 4
+    def RK4(self):
+        eps = self.eps
+        x = self.x
+        f = self.f
+
+        t = self.clock*eps + self.t0
+        k1 = eps * f(t, x)
+        k2 = eps * f(t + 0.5 * eps, x + 0.5 * k1)
+        k3 = eps * f(t + 0.5 * eps, x + 0.5 * k2)
+        k4 = eps * f(t + eps, x + k3)
+        self.x = x + (1.0 / 6.0)*(k1 + 2 * k2 + 2 * k3 + k4)
+
+    # System evolves until t_end
+    def step_t(self,t_end):
+        t = self.clock*self.eps + self.t0
+        if t > t_end:
+            raise Exception("End time cannot be lower then self.t")
+        n = int((t_end -t)/self.eps)
+        for i in range(n):
+            self.RK4()
+            self.clock +=1
+
+   
+    def restart(self, x0, t0=0):
+        self.x0 = x0
+        self.t0 = t0
+        self.x = x0
+        self.clock = 0
+
+
+
+        
+
 ##############################
 
 ########### ESN - Hyperparameters
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") # TODO: move all tensors and model to device
 os.system("cls")
-H = 300
-d = 6  # 0.1*H
-Nt = 100
-for_hor = 4      # This can be any integer, "n" for infinite horizon, "v" for variable
+H = 200
+d = 3  # 0.05*H
+Nt = 1000
+for_hor = 1      # This can be any integer, "n" for infinite horizon, "v" for variable
 dym_sys = 3
-epochs = 500
+epochs = 1000
 activations = ["LeakyReLU", "Tanh", "ELU", "ModTanh", "PrModTanh", "ConvModTanh"]
-activation = activations[0]
-sys_types = ["dis_rectilinear", "dis_sinusoidal"]
-sys_type = sys_types[0]
+activation = activations[1]
+sys_types = {
+            "discrete":     ["dis_rectilinear", "dis_sinusoidal"], 
+            "continuous":   ["Lorenz", "Elicoidal"]
+        }
+sys_type = list(sys_types.keys())[1]  #"continuous" # "discrete"
+sys_name = sys_types[sys_type][0]
 opt_types = ["SGD", "Adam"]
 opt_type = opt_types[1]
-early_stop = None #0.0005*Nt # 0.05  # None to deactive early stopping
-tikhonov = 0  # lambda value, 0 to deactive tikhonov
+early_stop = None  # 0.0005*Nt  # None to deactive early stopping
+tikhonov = 0.0001  # lambda value, 0 to deactive tikhonov
 p_tikhonov = 2
+sigma_in = 0.15
+lambda_coeff = 0.4  # <= 1 to ensure the Echo State Property
 
 
 ########### Internal Model (Reservoir)
@@ -173,7 +259,15 @@ for i in range(W.shape[0]):
         if abs(W[i,j]) > 0:
             cnt += 1
 
-In_acc = torch.rand([H], device=device)*2 - 1
+
+# Forcing largest eigenvalue norm to lambda to ensure ESP
+eig = SLE(W) #FLE(W)
+W = W*lambda_coeff/eig
+
+
+
+
+In_acc = (torch.rand([H], device=device)*2 - 1)*sigma_in
 h_0 = torch.rand([H], device=device)
 Win = torch.zeros([H,dym_sys], device=device)
 for i in range(In_acc.shape[0]):
@@ -184,40 +278,59 @@ model = ESN(Win, W, activation, dym_sys).to(device)
 
 
 print("########## ESN\n")
-print(f'Using device: {device}') 
-print(f"Hidden dimension: {H}")
-print(f"AVG connectivity: {cnt/H}")
-print(f"Training horizon: {Nt}")
-print(f"System type: {sys_type}")
-print(f"System dimension: {dym_sys}")
-print(f"Trained forecasting horizon: {for_hor}")
-print(f"Epochs: {epochs}")
-print(f"Reservoir activation function: {activation}")
-print(f"Optimizer: {opt_type}")
-print(f"Ealry Stop: {early_stop}")
-print(f"Tikhonov: {tikhonov}   [ p={p_tikhonov} ]")
-print(f'ESN number of parameters: {count_parameters(model)}\n')
+print(f'Using device:                   {device}') 
+print(f"Hidden dimension:               {H}")
+print(f"AVG connectivity:               {cnt/H}")
+print(f"Sigma_in:                       {sigma_in}")
+print(f"Lambda:                         {lambda_coeff}")
+print(f"Training horizon:               {Nt}")
+print(f"System type:                    {sys_name}   [{sys_type}]")
+print(f"System dimension:               {dym_sys}")
+print(f"Trained forecasting horizon:    {for_hor}")
+print(f"Epochs:                         {epochs}")
+print(f"Reservoir activation function:  {activation}")
+print(f"Optimizer:                      {opt_type}")
+print(f"Ealry Stop:                     {early_stop}")
+print(f"Tikhonov:                       {tikhonov}   [ p={p_tikhonov} ]")
+print(f'ESN number of parameters:       {count_parameters(model)}\n')
 
 
 ########### Ground Truth model
 
-if sys_type == "dis_rectilinear":
+# Discrete
+if sys_type == "discrete":
 
-    A = torch.tensor(np.array([[1, 0, 0],[0, 1 ,0],[ 0, 0, 1]]), dtype=torch.float, device=device)
-    x_0 = torch.tensor(np.array([1,1,-1.]), dtype=torch.float, device=device)
-    b = torch.tensor(np.array([0.1,0,0]), dtype=torch.float, device=device)
+    if sys_name == "dis_rectilinear":
 
-elif sys_type == "dis_sinusoidal":  
+        A = torch.tensor(np.array([[1, 0, 0],[0, 1 ,0],[ 0, 0, 1]]), dtype=torch.float, device=device)
+        x_0 = torch.tensor(np.array([1,1,-1.]), dtype=torch.float, device=device)
+        b = torch.tensor(np.array([0.1,0,0]), dtype=torch.float, device=device)
 
-    A = torch.tensor(np.array([[0, 1, 0],[-1, 0 ,0],[ 0, 0, 1]]), dtype=torch.float, device=device)
-    x_0 = torch.tensor(np.array([1,1,-1.]), dtype=torch.float, device=device)
-    b = torch.tensor(np.array([0,0,0]), dtype=torch.float, device=device)
+    elif sys_name == "dis_sinusoidal":  
 
-else:
-    # default: dis_sinusoidal
-    A = torch.tensor(np.array([[0, 1, 0],[-1, 0 ,0],[ 0, 0, 1]]), dtype=torch.float, device=device)
-    x_0 = torch.tensor(np.array([1,1,-1.]), dtype=torch.float, device=device)
-    b = torch.tensor(np.array([0,0,0]), dtype=torch.float, device=device)
+        A = torch.tensor(np.array([[0, 1, 0],[-1, 0 ,0],[ 0, 0, 1]]), dtype=torch.float, device=device)
+        x_0 = torch.tensor(np.array([1,1,-1.]), dtype=torch.float, device=device)
+        b = torch.tensor(np.array([0,0,0]), dtype=torch.float, device=device)
+
+    else:
+        # default: discrete sinusoidal
+        A = torch.tensor(np.array([[0, 1, 0],[-1, 0 ,0],[ 0, 0, 1]]), dtype=torch.float, device=device)
+        x_0 = torch.tensor(np.array([1,1,-1.]), dtype=torch.float, device=device)
+        b = torch.tensor(np.array([0,0,0]), dtype=torch.float, device=device)
+
+# Continuous
+elif sys_type == "continuous":
+
+    if sys_name == "Lorenz":
+        x_0 = torch.tensor([10, 20, 10], dtype=torch.float, device=device)
+        eps = 0.01
+        df = Lorenz
+
+    elif sys_name == "Elicoidal":
+        x_0 = torch.tensor([5, 5, 5], dtype=torch.float, device=device)
+        eps = 0.01
+        df = Elicoidal
+    sys = Sys(x_0, df, eps)
 
 
 ########### TRAINING Phase
@@ -235,6 +348,8 @@ for epoch in trange(epochs, desc="train epoch"):
     h_i = h_0
     x_i = torch.rand([3], dtype=torch.float, device=device)
     x_hat_i = x_i
+    if sys_type == "continuous":
+        sys.restart(x_i)
 
     Ed = 0
     if for_hor == "v":
@@ -248,7 +363,12 @@ for epoch in trange(epochs, desc="train epoch"):
         x_hat_i, h_i = model(x_hat_i,h_i)
         #except Exception as e:
             #print(e)
-        x_i = lin_sys(x_i, A, b)
+
+        if sys_type == "discrete":
+            x_i = lin_sys(x_i, A, b)
+        else:
+            sys.step()
+            x_i = sys.x
         Ed += (x_hat_i - x_i)**2
 
     # p-regularization 
@@ -286,16 +406,25 @@ if stopped:
 model.eval()
 Nt_test = Nt*2  # Horizon in test phase
 k = 0           # Component of the system to plot 
-x_sys = [x_0[k].cpu().numpy()]
-x_for_1 = [x_0[k].cpu().numpy()]
-x_for_n = [x_0[k].cpu().numpy()]
-x_for_t = [x_0[k].cpu().numpy()]
+if sys_type == "continuous":
+    sys.restart(x_0)
+
+# x_sys = [x_0[k].cpu().numpy()]
+# x_for_1 = [x_0[k].cpu().numpy()]
+# x_for_n = [x_0[k].cpu().numpy()]
+# x_for_t = [x_0[k].cpu().numpy()]
 x_i = x_0
 xn_hat_i = x_0
 xt_hat_i = x_0
 h1_i = h_0
 hn_i = h_0
 ht_i = h_0
+
+x_sys = x_0.cpu().unsqueeze(0)
+x_for_1 = x_0.cpu().unsqueeze(0)
+x_for_n = x_0.cpu().unsqueeze(0)
+x_for_t = x_0.cpu().unsqueeze(0)
+
 
 if for_hor == "v":
     #for_hor_t = random.randint(a=1, b=Nt)
@@ -317,16 +446,20 @@ for i in range(1, Nt_test+1):
     xt_hat_i, ht_i = model(xt_hat_i, ht_i)
 
     # ground truth system
-    x_i = lin_sys(x_i, A, b)
+    if sys_type == "discrete":
+        x_i = lin_sys(x_i, A, b)
+    else:
+        sys.step()
+        x_i = sys.x
 
-    x_sys.append(x_i[k].cpu())
-    x_for_1.append(x1_hat_i[k].cpu())
-    x_for_n.append(xn_hat_i[k].cpu())
-    x_for_t.append(xt_hat_i[k].cpu())
-
+    x_sys = torch.cat([x_sys, x_i.unsqueeze(0).cpu()],dim=0)
+    x_for_1 = torch.cat([x_for_1, x1_hat_i.unsqueeze(0).detach().cpu()],dim=0)
+    x_for_n = torch.cat([x_for_n, xn_hat_i.unsqueeze(0).detach().cpu()],dim=0)
+    x_for_t = torch.cat([x_for_t, xt_hat_i.unsqueeze(0).detach().cpu()],dim=0)
 
 
 ########### PLOTS
+
 
 # Loss
 plt.plot(loss_plotter)
@@ -338,20 +471,23 @@ plt.figure(2)
 
 
 plt.title(f"Forecasting")
-plt.plot(x_sys, color="blue", label="ground truth")
-plt.plot(x_for_1, color="red", label="1-forecasting")
-plt.plot(x_for_n, color="green",label="n-forecasting")
+plt.plot(x_sys[:,k], color="blue", label="ground truth")
+plt.plot(x_for_1[:,k], color="red", label="1-forecasting")
+plt.plot(x_for_n[:,k], color="green",label="n-forecasting")
 #if for_hor != "n" and for_hor != 1:
 #    plt.plot(x_for_t, color="violet",label=f"{for_hor}-forecasting (trained)")
-plt.plot(x_for_t, color="violet",label=f"{for_hor}-forecasting (trained)")
+plt.plot(x_for_t[:,k], color="violet",label=f"{for_hor}-forecasting (trained)")
 plt.xlabel("t")
 plt.ylabel(f"x{k}(t)")
 plt.legend()
-plt.scatter(Nt, x_sys[Nt], color="black")
+plt.scatter(Nt, x_sys[Nt, k], color="black")
+
+plt.figure(3)
+ax = plt.axes(projection='3d')
+ax.plot3D(x_for_t[:,0].numpy(), x_for_t[:,1].numpy(), x_for_t[:,2].numpy(), 'red')
+ax.plot3D(x_sys[:,0].numpy(), x_sys[:,1].numpy(), x_sys[:,2].numpy(), 'blue')
+plt.title("3D plot")
 
 plt.show()
 
 
-# IDEAS
-
-# early stop
