@@ -231,9 +231,9 @@ d = 3  # 0.05*H
 Nt = 100    # paper: 1000
 for_hor = 1        # This can be any integer, "n" for infinite horizon, "v" for variable
 dym_sys = 3
-epochs = 10000
+epochs = 1005
 activations = ["LeakyReLU", "Tanh", "ELU", "ModTanh", "PrModTanh", "ConvModTanh1", "ConvModTanh2"]
-activation = activations[5]
+activation = activations[6]
 sys_types = {
             "discrete":     ["dis_rectilinear", "dis_sinusoidal"], 
             "continuous":   ["Lorenz", "Elicoidal"]
@@ -247,9 +247,9 @@ tikhonov = 0.0001  # lambda value, 0 to deactive tikhonov
 p_tikhonov = 2
 sigma_in = 0.15
 lambda_coeff = 0.4  # <= 1 to ensure the Echo State Property
-save_training = False         # save training
+save_training = True         # save training
 pre_training = False          # pre training   
-alpha = 0                     # tempered Physical loss
+alpha = 1                     # tempered Physical loss
 
 
 ########### Internal Model (Reservoir)
@@ -344,7 +344,8 @@ elif sys_type == "continuous":
     elif sys_name == "Elicoidal":
         x_0 = torch.tensor([5, 5, 5], dtype=torch.float, device=device)
         eps = 0.01
-        df = Elicoidal
+        df = lambda t,x : Elicoidal(t, x, a=0.6, b=0)
+
     sys = Sys(x_0, df, eps)
 
 
@@ -452,7 +453,20 @@ for epoch in trange(epochs, desc="train epoch"):
         else:
             sys.step()
             x_i = sys.x
-            Ep += ((x_hat_i - x_prev)/sys.eps - df(sys.t0+sys.clock*sys.eps, x_hat_i))**2
+            #Ep += ((x_hat_i - x_prev)/sys.eps - df(sys.t0+sys.clock*sys.eps, x_hat_i))**2
+            Ep += ((x_hat_i - x_prev) - df(sys.t0+sys.clock*sys.eps, x_hat_i)*sys.eps)**2
+            if epoch > 1000:
+                print(f"\n{i}")
+                print(f"x_hat_i: {x_hat_i}")
+                print(f"x_prev: {x_prev}")
+                print(f"x_i: {x_i}")
+                print(f"Dx: {(x_hat_i - x_prev)/sys.eps}")
+                print(f"df(x_prev): {df(sys.t0+sys.clock*sys.eps, x_prev)}")
+                print(f"df(x_hat_i): {df(sys.t0+sys.clock*sys.eps, x_hat_i)}")
+                print(((x_hat_i - x_prev)/sys.eps - df(sys.t0+sys.clock*sys.eps, x_hat_i))**2)
+        if epoch > 1000:   
+            print(f"tot: {Ep}")
+            input()
         Ed += (x_hat_i - x_i)**2        
         x_prev = x_hat_i
 
