@@ -37,14 +37,14 @@ if reproducible:
 device = "cpu" #torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
 H = 200
 d = 3              # 0.02*H
-Nt = 200           # paper: 1000
+Nt = 1000          # paper: 1000
 for_hor = 1        # This can be any integer, "n" for infinite horizon, "v" for variable
 epochs = 10000
 activations = ["LeakyReLU", "Tanh", "ELU", "ModTanh", "PrModTanh", "ConvModTanh1", "ConvModTanh2"]
 activation = activations[6]
 
 sys_types = {
-            "discrete":     ["dis_rectilinear", "dis_sinusoidal", "messy_dis", "armonic_boom_dis"], 
+            "discrete":     ["dis_rectilinear", "dis_sinusoidal", "messy_dis", "armonic_boom_dis", "collatz"], 
             "continuous":   ["Lorenz", "Elicoidal"]
         }
 sys_type = list(sys_types.keys())[1]  # "discrete" #"continuous" 
@@ -59,7 +59,8 @@ p_tikhonov = 2
 sigma_in = 0.15
 lambda_coeff = 0.4  # spectral radius. must be < 1 to ensure the Echo State Property
 save_training = False         # save training
-pre_training = False          # pre training   
+pre_training = False          # pre training (Ridge regression)
+pre_training_horizon = 20     # pre training horizon 
 alpha = 0                     # tempered Physical loss
 basin_r = 0 #0.01             # radius of the n-sphere around x_0 form which initial states are randomly initialized during training
 washout = 25                  # Steps after which the predictability is counted (the Reservoir do not depend almost anymore on h_0)                    
@@ -100,6 +101,13 @@ if sys_type == "discrete":
         x_0 = torch.tensor(np.array([1,1]), dtype=torch.float, device=device)
         eps = 1
         df = Sys.armonic_boom_dis
+
+    elif sys_name == "collatz":
+        dym_sys = 1
+        x_0 = torch.tensor([27], dtype=torch.float, device=device)
+        eps = 1
+        df = Sys.collatz
+    
     else:
         # default: discrete sinusoidal
         A = torch.tensor(np.array([[0, 1, 0],[-1, 0 ,0],[ 0, 0, 1]]), dtype=torch.float, device=device)
@@ -160,6 +168,7 @@ print(f"Tikhonov:                       {tikhonov}   [ p={p_tikhonov} ]")
 print(f"Basin radius:                   {basin_r}")
 print(f"Save Training:                  {save_training}")
 print(f"Pre-Trainig:                    {pre_training}")
+print(f"Pre-Training horizon:           {pre_training_horizon}")
 print(f'ESN number of parameters:       {count_parameters(model)}\n')
 
 
@@ -170,24 +179,23 @@ print(f'ESN number of parameters:       {count_parameters(model)}\n')
 optimizer = get_model_optimizer(model, opt_type)
 
 ## Pre-Training
+#  Ridge regression: X*R'*(R*R' + tikhonov*I)^-1
 if pre_training:
     h_i = h_0
-    x_i = (torch.rand([3], dtype=torch.float, device=device)*2-1)*basin_r + x_0
-    X = h_0.unsqueeze(0)
-    Y = x_i.unsqueeze(0)
+    x_i = x_0 #(torch.rand([dym_sys], dtype=torch.float, device=device)*2-1)*basin_r + x_0
+    R = h_0.clone().detach().unsqueeze(1)
+    X = x_i.clone().detach().unsqueeze(1)
     x_hat_i = x_i
 
     sys.restart(x_i)
 
     model.train()
-    Ed = 0
-    Ep = 0
     if for_hor == "v":
         for_hor_t = random.randint(a=1, b=Nt)
     else:
         for_hor_t = for_hor
     x_prev = x_i
-    for i in range(1, Nt+1):
+    for i in range(1, pre_training_horizon):
         if for_hor_t != "n" and i % for_hor_t == 0:
             x_hat_i = x_i
 
@@ -197,37 +205,22 @@ if pre_training:
         # ground truth model step
         sys.step()
         x_i = sys.x
-
-        Ep += ((x_hat_i - x_prev)/sys.eps - df(sys.t0+sys.clock*sys.eps, x_hat_i))**2
-        Ed += (x_hat_i - x_i)**2
         x_prev = x_hat_i
 
-        Y = torch.cat([Y, x_i.clone().detach().unsqueeze(0)],dim=0)
-        X = torch.cat([X, h_i.clone().detach().unsqueeze(0)],dim=0)
+        X = torch.cat([X, x_i.clone().detach().unsqueeze(1)],dim=1)
+        R = torch.cat([R, h_i.clone().detach().unsqueeze(1)],dim=1)
 
-    # p-regularization 
-    Ed += tikhonov*torch.norm(model.fco.weight, p=p_tikhonov, dim=1)
-    Ed = torch.sum(Ed/Nt)/dym_sys
+    # Wout = X*R'*(R*R' + tikhonov*I)^-1
 
-    # Physical constraint
-    Ep = torch.sum(Ep/Nt)/dym_sys
-    Ed += alpha*Ep
+    Wout = torch.einsum("dn, nh -> dh", X, R.t())
+    R_inv = torch.einsum("hn, nk -> hk", R, R.t())
 
-    # backpropagation and optimization
-    Ed.backward()
-    optimizer.step()
-    optimizer.zero_grad()
-
-    # Wout = Y'*X*(X'*X + gamma*I)^-1
-
-    Wout = torch.einsum("dn, nh -> dh", Y.t(), X)
-    X_inv = torch.einsum("hn, nk -> hk", X.t(), X)
-
-    Wout = torch.einsum("dh, hk -> dk", Wout, torch.inverse(X_inv + tikhonov*torch.eye(H, device=device)))
-    Wout.requires_grad = True
+    Wout = torch.einsum("dh, hk -> dk", Wout, torch.inverse(R_inv + tikhonov*torch.eye(H, device=device)))
+    #Wout.requires_grad = True
 
     with torch.no_grad():
         model.fco.weight = torch.nn.Parameter(Wout)
+
 
 
 
@@ -375,17 +368,17 @@ print(f"Predictability threshold:       {threshold}")
 leng = len(error_plot_1for)-1
 for k,v in enumerate(error_plot_1for):
     if (k>=washout and v>threshold) or k==leng:
-        print(f"Predictability Horizon (1-for): {k} ({k*sys.eps})")
+        print(f"Predictability Horizon (1-for): {k} ({k*sys.eps}) | washout: {washout}")
         break
 leng = len(error_plot_nfor)-1
 for k,v in enumerate(error_plot_nfor):
     if (k>=washout and v>threshold) or k==leng:
-        print(f"Predictability Horizon (n-for): {k} ({k*sys.eps})")
+        print(f"Predictability Horizon (n-for): {k} ({k*sys.eps}) | washout: {washout}")
         break
 leng = len(error_plot_tfor)-1
 for k,v in enumerate(error_plot_tfor):
     if (k>=washout and v>threshold) or k==leng:
-        print(f"Predictability Horizon (t-for): {k} ({k*sys.eps})")
+        print(f"Predictability Horizon (t-for): {k} ({k*sys.eps}) | washout: {washout}")
         break
 
 
@@ -428,15 +421,47 @@ if save_training:
     data["basin_r"] = basin_r
     data["washout"] = washout
     data["pre_training"] = pre_training
+    data["pre_training_horizon"] = pre_training_horizon
     data["parameters count"] = count_parameters(model)
     data["Nt_test"] = Nt_test
     data["threshold"] = threshold 
 
-    save_handler.save_hidden(h_0.detach().cpu())
-    save_handler.save_initial(x_0.detach().cpu())
-    save_handler.save_W(model.W.detach().cpu())
-    save_handler.save_Win(model.Win.detach().cpu())
-    save_handler.save(model, data, plots)
+
+    data = {
+        "reproducible": 42,
+        "device": "cpu",
+        "H": 200,
+        "connectivity": 2.985,
+        "sigma_in": 0.15,
+        "lambda_coeff": 0.4,
+        "alpha": 0,
+        "Nt": 200,
+        "sys_name": "Elicoidal",
+        "sys_type": "continuous",
+        "dym_sys": 3,
+        "for_hor": 1,
+        "epochs": 10000,
+        "activation": "ConvModTanh2",
+        "opt_type": "Adam",
+        "early_stop": None,
+        "tikhonov": 0.0001,
+        "p_tikhonov": 2,
+        "basin_r": 0,
+        "washout": 25,
+        "pre_training": False,
+        "pre_training_horizon": pre_training_horizon,
+        "parameters count": 1005,
+        "Nt_test": 400,
+        "threshold": 0.2
+    }
+
+    save_handler.save_cfgs(data)
+
+    # save_handler.save_hidden(h_0.detach().cpu())
+    # save_handler.save_initial(x_0.detach().cpu())
+    # save_handler.save_W(model.W.detach().cpu())
+    # save_handler.save_Win(model.Win.detach().cpu())
+    # save_handler.save(model, data, plots)
 
 
 ########### PLOTS

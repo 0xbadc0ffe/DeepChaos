@@ -7,7 +7,7 @@
     "lambda_coeff": 0.4,
     "alpha": 0,
     "Nt": 200,
-    "sys_name": "Elicoidal",
+    "sys_name": "Lorenz",
     "sys_type": "continuous",
     "dym_sys": 3,
     "for_hor": 1,
@@ -20,6 +20,7 @@
     "basin_r": 0,
     "washout": 25,
     "pre_training": false,
+    "pre_training_horizon": 5,
     "parameters count": 1005,
     "Nt_test": 400,
     "threshold": 0.2

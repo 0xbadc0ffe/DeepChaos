@@ -106,8 +106,8 @@ except:
 
 model.eval()
 Nt_test = cfgs["Nt_test"]  # Horizon in test phase
-k = cfgs["k"]           # Component of the system to plot 
 threshold = cfgs["threshold"] # Error threshold for predicatbility horizon
+washout = cfgs["washout"]       # washout
 sys.restart(x_0)
 
 
@@ -171,19 +171,21 @@ error_plot_tfor = error_plot_tfor/time_avg
 
 print("\n\n\n########## Testing Phase:\n")
 print(f"Tested horizon:                 {Nt_test}")
-print(f"Plotted component:              {k}")
 print(f"Predictability threshold:       {threshold}")
+leng = len(error_plot_1for)-1
 for k,v in enumerate(error_plot_1for):
-    if v>threshold:
-        print(f"Predictability Horizon (1-for): {k} ({k*sys.eps})")
+    if (k>=washout and v>threshold) or k==leng:
+        print(f"Predictability Horizon (1-for): {k} ({k*sys.eps}) | washout: {washout}")
         break
+leng = len(error_plot_nfor)-1
 for k,v in enumerate(error_plot_nfor):
-    if v>threshold:
-        print(f"Predictability Horizon (n-for): {k} ({k*sys.eps})")
+    if (k>=washout and v>threshold) or k==leng:
+        print(f"Predictability Horizon (n-for): {k} ({k*sys.eps}) | washout: {washout}")
         break
+leng = len(error_plot_tfor)-1
 for k,v in enumerate(error_plot_tfor):
-    if v>threshold:
-        print(f"Predictability Horizon (t-for): {k} ({k*sys.eps})")
+    if (k>=washout and v>threshold) or k==leng:
+        print(f"Predictability Horizon (t-for): {k} ({k*sys.eps}) | washout: {washout}")
         break
 
 plots = {}

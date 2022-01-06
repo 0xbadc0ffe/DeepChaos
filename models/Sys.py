@@ -18,6 +18,21 @@ def armonic_boom_dis(t,x, delT=50, delX=1, delS=0.4):
     return torch.tensor([x[0]*(delS+np.sin(t/delT)), -x[0]*(delS + np.cos(t/delT))])*delX
 
 
+# 100% impossible to learn, but you can show this to your 
+# mathematician friend who is into number theory. 
+# Let them think that we are not gonna steal their job ...
+# ... for now .... 
+def collatz(t, x): 
+    x = x.round()
+    if x == 1:
+        return x # 1 is when the algotihm stops
+    elif x % 2 == 0:
+        return x/2
+    else: 
+        return 3*x + 1
+    # NB: this allow also negative integers
+
+
 class Sys():
 
     def __init__(self, x_0, f, eps, t0=0, steps=1, sys_type="continuous") -> None:
