@@ -63,16 +63,19 @@ def load_Win(name="Win", path=PATH):
 # TODO: Save System (and x_0 togheter)
 # TODO: Save W_in, W, h_0 togheter
 
+
+def save_cfgs(data, cfgs_name="cfgs", indent=4, path=PATH):       
+    jsonfile = path+f"\{cfgs_name}.json"   
+    with open(jsonfile, "w+") as jfile:
+        json.dump(data, jfile, indent=indent)
+
 def save(model, data, plots: dict, model_name="model", cfgs_name="cfgs", path=PATH):
 
     # Saving model weights
     torch.save(model.state_dict(), path+f"\{model_name}.pth")
 
     # Saving plots and configs
-    jsonfile = path+f"\{cfgs_name}.json"
-    
-    with open(jsonfile, "w+") as jfile:
-        json.dump(data, jfile, indent=4)
+    save_cfgs(data, cfgs_name=cfgs_name)
 
     # saving plots
     for name in plots:

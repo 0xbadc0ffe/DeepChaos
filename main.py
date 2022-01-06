@@ -57,11 +57,12 @@ early_stop = None  # 0.0005*Nt  # None to deactive early stopping
 tikhonov = 0.0001  # lambda value, 0 to deactive tikhonov
 p_tikhonov = 2
 sigma_in = 0.15
-lambda_coeff = 0.4  # <= 1 to ensure the Echo State Property
+lambda_coeff = 0.4  # spectral radius. must be < 1 to ensure the Echo State Property
 save_training = False         # save training
 pre_training = False          # pre training   
 alpha = 0                     # tempered Physical loss
-basin_r = 0 #0.01                   # radius of the n-sphere around x_0 form which initial states are randomly initialized during training
+basin_r = 0 #0.01             # radius of the n-sphere around x_0 form which initial states are randomly initialized during training
+washout = 25                  # Steps after which the predictability is counted (the Reservoir do not depend almost anymore on h_0)                    
 
 
 ########### Ground Truth model
@@ -147,6 +148,7 @@ print(f"Sigma_in:                       {sigma_in}")
 print(f"Lambda:                         {lambda_coeff}")
 print(f"Alpha:                          {alpha}")
 print(f"Training horizon:               {Nt}")
+print(f"Washout:                        {washout}")
 print(f"System type:                    {sys_name}   [{sys_type}]")
 print(f"System dimension:               {dym_sys}")
 print(f"Trained forecasting horizon:    {for_hor}")
@@ -305,7 +307,6 @@ if stopped:
 
 model.eval()
 Nt_test = Nt*2  # Horizon in test phase
-k = 0           # Component of the system to plot 
 threshold = 0.2 # Error threshold for predicatbility horizon
 sys.restart(x_0)
 
@@ -370,21 +371,20 @@ error_plot_tfor = error_plot_tfor/time_avg
 
 print("\n\n\n########## Testing Phase:\n")
 print(f"Tested horizon:                 {Nt_test}")
-print(f"Plotted component:              {k}")
 print(f"Predictability threshold:       {threshold}")
 leng = len(error_plot_1for)-1
 for k,v in enumerate(error_plot_1for):
-    if v>threshold or k==leng:
+    if (k>=washout and v>threshold) or k==leng:
         print(f"Predictability Horizon (1-for): {k} ({k*sys.eps})")
         break
 leng = len(error_plot_nfor)-1
 for k,v in enumerate(error_plot_nfor):
-    if v>threshold or k==leng:
+    if (k>=washout and v>threshold) or k==leng:
         print(f"Predictability Horizon (n-for): {k} ({k*sys.eps})")
         break
 leng = len(error_plot_tfor)-1
 for k,v in enumerate(error_plot_tfor):
-    if v>threshold or k==leng:
+    if (k>=washout and v>threshold) or k==leng:
         print(f"Predictability Horizon (t-for): {k} ({k*sys.eps})")
         break
 
@@ -426,10 +426,10 @@ if save_training:
     data["tikhonov"] = tikhonov
     data["p_tikhonov"] = p_tikhonov
     data["basin_r"] = basin_r
+    data["washout"] = washout
     data["pre_training"] = pre_training
     data["parameters count"] = count_parameters(model)
     data["Nt_test"] = Nt_test
-    data["k"] = k 
     data["threshold"] = threshold 
 
     save_handler.save_hidden(h_0.detach().cpu())

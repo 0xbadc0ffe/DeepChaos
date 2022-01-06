@@ -40,7 +40,7 @@ def plot_loss(plots=None, show=True, plot_name=["loss", "weigths_norm"]):
         plt.show()
     return True
 
-def plot_err(plots=None, show=True, plot_name=["error_1-for", "error_n-for", "error_t-for"], threshold=0.2): 
+def plot_err(plots=None, show=True, plot_name=["error_1-for", "error_n-for", "error_t-for"], threshold=0.2, washout=25): 
     if plots is None:
         _, plots = _load() 
    
@@ -59,17 +59,17 @@ def plot_err(plots=None, show=True, plot_name=["error_1-for", "error_n-for", "er
     plt.ylabel(f"E(t)")
     leng = len(error_plot_1for)-1
     for k,v in enumerate(error_plot_1for):
-        if v>threshold or k==leng:
+        if (k>=washout and v>threshold) or k==leng:
             plt.scatter(k, error_plot_1for[k], color="red") # Predictability Horizon for 1-for
             break
     leng = len(error_plot_nfor)-1
     for k,v in enumerate(error_plot_nfor):
-        if v>threshold or k==leng:
+        if (k>=washout and v>threshold) or k==leng:
             plt.scatter(k, error_plot_nfor[k], color="green") # Predictability Horizon for n-for
             break
     leng = len(error_plot_tfor)-1
     for k,v in enumerate(error_plot_tfor):
-        if v>threshold or k==leng:
+        if (k>=washout and v>threshold) or k==leng:
             plt.scatter(k, error_plot_tfor[k], color="blue") # Predictability Horizon for t-for
             break
     plt.legend()
@@ -216,9 +216,13 @@ def plot_all(components=3, plots=None, data=None, path=None):
 
 
     # Err
-
     plt.figure(ind)
-    res = plot_err(plots, show=False)
+    try: 
+        washout = data["washout"]
+        threshold=data["threshold"]
+        res = plot_err(plots, show=False, threshold=threshold, washout=washout)
+    except:
+        res = plot_err(plots, show=False)
     if res:
         ind += 1
 
